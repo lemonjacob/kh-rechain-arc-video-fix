@@ -1,0 +1,131 @@
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index 14ed4f8..9082613 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -25,6 +25,8 @@
+ #include "vkd3d_platform.h"
+ #include "vkd3d_d3dkmt.h"
+ 
++#include <stdio.h>
++
+ #ifdef VKD3D_ENABLE_RENDERDOC
+ #include "vkd3d_renderdoc.h"
+ #endif
+@@ -6868,6 +6870,33 @@ static inline bool handle_is_kmt_style(HANDLE handle)
+ {
+     return ((ULONG_PTR)handle & 0x40000000) && ((ULONG_PTR)handle - 2) % 4 == 0;
+ }
++
++/* KH fix: selects the external memory type when importing a DXVK KMT texture. */
++__thread bool vkd3d_khfix_import_kmt;
++
++/* Reads the metadata DXVK published in D3D11CommonTexture::ExportImageInfo. */
++static bool vkd3d_khfix_get_metadata(HANDLE handle, struct DxvkSharedTextureMetadata *metadata)
++{
++    char value[sizeof(*metadata) * 2 + 1];
++    uint8_t *bytes = (uint8_t *)metadata;
++    char name[32];
++    unsigned int byte;
++    size_t i;
++
++    snprintf(name, sizeof(name), "KHFIX_META_%08x", (uint32_t)(ULONG_PTR)handle);
++
++    if (GetEnvironmentVariableA(name, value, sizeof(value)) != sizeof(*metadata) * 2)
++        return false;
++
++    for (i = 0; i < sizeof(*metadata); i++)
++    {
++        if (sscanf(&value[i * 2], "%2x", &byte) != 1)
++            return false;
++        bytes[i] = byte;
++    }
++
++    return true;
++}
+ #endif
+ 
+ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenSharedHandle(d3d12_device_iface *iface,
+@@ -6890,6 +6919,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenSharedHandle(d3d12_device_ifac
+         struct d3d12_resource *resource;
+         D3D12_RESOURCE_DESC1 desc;
+         bool kmt_handle = false;
++        bool have_metadata;
+ 
+         heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+         heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+@@ -6897,7 +6927,16 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenSharedHandle(d3d12_device_ifac
+         heap_props.CreationNodeMask = 0;
+         heap_props.VisibleNodeMask = 0;
+ 
+-        if (SUCCEEDED(hr = d3d12_device_open_resource_descriptor(device, handle, &desc)))
++        /* A NULL handle would silently create a new blank texture below. */
++        if (!handle)
++        {
++            *object = NULL;
++            return E_INVALIDARG;
++        }
++
++        have_metadata = vkd3d_khfix_get_metadata(handle, &metadata);
++
++        if (!have_metadata && SUCCEEDED(hr = d3d12_device_open_resource_descriptor(device, handle, &desc)))
+         {
+             if (FAILED(hr = d3d12_resource_create_committed(device, &desc, &heap_props,
+                     D3D12_HEAP_FLAG_SHARED, D3D12_RESOURCE_STATE_COMMON, NULL, 0, NULL, handle, &resource)))
+@@ -6910,7 +6949,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenSharedHandle(d3d12_device_ifac
+             return return_interface(&resource->ID3D12Resource_iface, &IID_ID3D12Resource, riid, object);
+         }
+ 
+-        if (handle_is_kmt_style(handle))
++        if (!have_metadata && handle_is_kmt_style(handle))
+         {
+             handle = vkd3d_open_kmt_handle(handle);
+             kmt_handle = true;
+@@ -6923,7 +6962,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenSharedHandle(d3d12_device_ifac
+             }
+         }
+ 
+-        if (!vkd3d_get_shared_metadata(handle, &metadata, sizeof(metadata), NULL))
++        if (!have_metadata && !vkd3d_get_shared_metadata(handle, &metadata, sizeof(metadata), NULL))
+         {
+             WARN("Failed to get ID3D12Resource shared handle metadata.\n");
+             if (kmt_handle)
+@@ -6970,8 +7009,10 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenSharedHandle(d3d12_device_ifac
+         desc.SamplerFeedbackMipRegion.Height = 0;
+         desc.SamplerFeedbackMipRegion.Depth = 0;
+ 
++        vkd3d_khfix_import_kmt = have_metadata && ((UINT_PTR)handle & 0xc0000000);
+         hr = d3d12_resource_create_committed(device, &desc, &heap_props,
+                 D3D12_HEAP_FLAG_SHARED, D3D12_RESOURCE_STATE_COMMON, NULL, 0, NULL, handle, &resource);
++        vkd3d_khfix_import_kmt = false;
+         if (kmt_handle)
+             CloseHandle(handle);
+ 
+diff --git a/libs/vkd3d/resource.c b/libs/vkd3d/resource.c
+index 25754b7..18cca03 100644
+--- a/libs/vkd3d/resource.c
++++ b/libs/vkd3d/resource.c
+@@ -762,6 +762,10 @@ static HRESULT vkd3d_get_image_create_info(struct d3d12_device *device,
+     {
+         external_info->sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+         external_info->handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++#ifdef _WIN32
++        if (vkd3d_khfix_import_kmt)
++            external_info->handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT;
++#endif
+         vk_prepend_struct(image_info, external_info);
+     }
+ 
+diff --git a/libs/vkd3d/vkd3d_private.h b/libs/vkd3d/vkd3d_private.h
+index 8024485..18a60c3 100644
+--- a/libs/vkd3d/vkd3d_private.h
++++ b/libs/vkd3d/vkd3d_private.h
+@@ -7181,6 +7181,9 @@ struct DxvkSharedTextureMetadata {
+ bool vkd3d_set_shared_metadata(HANDLE handle, void *buf, uint32_t buf_size);
+ bool vkd3d_get_shared_metadata(HANDLE handle, void *buf, uint32_t buf_size, uint32_t *metadata_size);
+ HANDLE vkd3d_open_kmt_handle(HANDLE kmt_handle);
++#ifdef _WIN32
++extern __thread bool vkd3d_khfix_import_kmt;
++#endif
+ 
+ #define VKD3D_VENDOR_ID_NVIDIA 0x10DE
+ #define VKD3D_VENDOR_ID_AMD 0x1002
