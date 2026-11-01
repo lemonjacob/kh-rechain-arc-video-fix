@@ -37,6 +37,7 @@ Only use this for Re:Chain. It changes how shared textures work, so don't use th
    ```
 
 4. Press Play. Re:Chain starts directly because the launcher crashes when these DLLs are installed.
+5. In the game's settings, set the framerate to **Unlimited** and turn the refresh rate sync (V-Sync) setting **Off**.
 
 ## Uninstall, or play another game in the collection
 
