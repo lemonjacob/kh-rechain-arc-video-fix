@@ -17,7 +17,7 @@ This project is not affiliated with or endorsed by Square Enix, Disney, Intel, o
 | DXVK | v3.1.1 |
 | vkd3d-proton | v3.1 |
 
-This has only been tested on that one setup, mainly through the intro scenes. It may not work on other Arc GPUs or drivers, and a driver update could break it. Reports from other systems are welcome: please open an issue with your GPU, driver version and result.
+This has only been tested on that one setup, mainly through the intro scenes. It may not work on other Arc GPUs or drivers, and a driver update could break it. Reports from other systems are welcome but I don't have another system to test just putting out what works for me for others.
 
 Only use this for Re:Chain. It changes how shared textures work, so don't use these DLLs with other games.
 
